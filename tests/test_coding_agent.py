@@ -190,15 +190,16 @@ class CodeGeneratorTests(unittest.TestCase):
 
 
 class CodingCliTests(unittest.TestCase):
-    def test_requirements_cli_runs_offline_generation_and_review(self) -> None:
+    def test_requirements_cli_reports_offline_generation_and_mock_blocker(self) -> None:
         output = io.StringIO()
         with patch("sys.argv", ["main.py", "--requirements", "实现相加"]), patch(
             "main.create_code_generator", return_value=MockCodeGenerator()
         ), patch("main.create_reviewer", return_value=MockReviewer()), redirect_stdout(output):
-            self.assertEqual(main(), 0)
+            self.assertEqual(main(), 1)
         self.assertIn("Coding Agent", output.getvalue())
         self.assertIn("get_requirements", output.getvalue())
         self.assertIn("代码审查结果", output.getvalue())
+        self.assertIn("示例问题", output.getvalue())
 
     def test_invalid_generation_cli_options_fail_before_loading_providers(self) -> None:
         args = [

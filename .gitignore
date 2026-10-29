@@ -13,3 +13,12 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# Generated local verification evidence (keep portable repair reports).
+/reports/**/*.json
+/reports/**/*.xml
+/reports/2026-10-29/verify_runtime.py
+/reports/2026-10-29/verify_venv.py
+/reports/2026-10-29/问题报告.md
+/reports/2026-10-29/虚拟环境验收报告.md
+/reports/2026-10-29/复验汇总.md

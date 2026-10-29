@@ -11,10 +11,10 @@ from agent import CodeReviewAgent
 from fix_agent import FixAgent, create_fix_workflow
 from llm import LLMFixError, LLMFixSyntaxError, OpenAICodeFixer
 from models import (
-    CodeGenerationResult, ReviewIssue, ReviewReport, TestCase,
-    TestExecutionResult, TestGenerationResult,
+    CodeGenerationResult, ReviewIssue, ReviewReport, TestCase as GeneratedCase,
+    TestExecutionResult as ExecutionResult, TestGenerationResult as GenerationResult,
 )
-from test_agent import TestAgent
+from test_agent import TestAgent as WorkflowTestAgent
 from workflow import WorkflowExecutionError, WorkflowState, WorkflowStatus, create_repair_workflow
 
 
@@ -24,7 +24,7 @@ INVALID = "def add(a, b)\n    return a + b\n"
 REPORT = ReviewReport(summary="加法有误", issues=[ReviewIssue(
     problem="使用减法", severity="high", reason="结果不符合需求", suggestion="改为加法",
 )])
-CASES = [TestCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
+CASES = [GeneratedCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
 
 
 def completion(code: str) -> SimpleNamespace:
@@ -117,7 +117,7 @@ class FixSyntaxRetryTests(unittest.TestCase):
     def test_compile_failure_not_detected_by_ast_is_retried(self) -> None:
         fixer = Mock()
         fixer.fix.side_effect = [
-            CodeGenerationResult(code="return 1", summary="AST 可解析但不能编译"),
+            CodeGenerationResult.model_construct(code="return 1", summary="供应商绕过校验"),
             CodeGenerationResult(code=VALID, summary="修复作用域语法"),
         ]
         run = create_fix_workflow(FixAgent(fixer)).run({"code": ORIGINAL, "report": REPORT})
@@ -176,14 +176,14 @@ class FixSyntaxRetryTests(unittest.TestCase):
             REPORT if code == ORIGINAL else ReviewReport(summary="没有问题", issues=[])
         )
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证加法")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证加法")
         runner = Mock()
-        runner.run.side_effect = lambda code, cases: TestExecutionResult(
+        runner.run.side_effect = lambda code, cases: ExecutionResult(
             status="passed" if code == VALID else "failed", tests_run=1,
             passed=int(code == VALID), failed=int(code != VALID),
         )
         workflow = create_repair_workflow(
-            CodeReviewAgent(reviewer), FixAgent(fixer), TestAgent(generator, runner), max_fix_attempts=1,
+            CodeReviewAgent(reviewer), FixAgent(fixer), WorkflowTestAgent(generator, runner), max_fix_attempts=1,
         )
         run = workflow.run({"code": ORIGINAL})
         self.assertEqual([item.step for item in run.executions], ["review", "test", "fix", "test", "review"])

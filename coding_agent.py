@@ -5,8 +5,8 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from agent import ReviewAgent
-from llm import CodeGenerator, LLMGenerationError
-from models import CodeGenerationResult
+from llm import CodeGenerator, LLMCodeSyntaxError, LLMGenerationError
+from models import CodeGenerationResult, generated_code_syntax_error
 from workflow import END, Agent, AgentResult, BaseAgent, StateView, WorkflowEngine, create_repair_workflow
 
 
@@ -28,13 +28,18 @@ class CodingAgent(BaseAgent):
         if not isinstance(context, str):
             raise TypeError("生成上下文必须是 str。")
 
-        result = self._generator.generate(requirements.strip(), context=context)
-        if not isinstance(result, CodeGenerationResult):
-            raise LLMGenerationError("CodeGenerator 必须返回 CodeGenerationResult。")
-        # Revalidate injected providers as well as real LLM responses before commit.
         try:
+            result = self._generator.generate(requirements.strip(), context=context)
+            if not isinstance(result, CodeGenerationResult):
+                raise LLMGenerationError("CodeGenerator 必须返回 CodeGenerationResult。")
+            # Revalidate injected providers as well as real LLM responses before commit.
             return CodeGenerationResult.model_validate(result.model_dump())
         except ValidationError as exc:
+            syntax = generated_code_syntax_error(exc)
+            if syntax is not None:
+                raise LLMCodeSyntaxError(
+                    f"代码生成结果无效：{exc}", generated_code=syntax.code, reason=syntax.reason,
+                ) from exc
             raise LLMGenerationError(f"代码生成结果无效：{exc}") from exc
 
     def run(self, state: StateView) -> AgentResult:

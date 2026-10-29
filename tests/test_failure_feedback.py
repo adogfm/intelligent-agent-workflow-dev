@@ -12,27 +12,27 @@ from coding_agent import CodingAgent, create_coding_workflow
 from fix_agent import FixAgent
 from llm import OpenAICodeFixer
 from models import (
-    CodeGenerationResult, ReviewReport, TestCase, TestExecutionResult,
-    TestFailure, TestGenerationResult,
+    CodeGenerationResult, ReviewReport, TestCase as GeneratedCase, TestExecutionResult as ExecutionResult,
+    TestFailure as FailureDetail, TestGenerationResult as GenerationResult,
 )
 from prompt import build_fix_input
-from test_agent import TestAgent, create_test_workflow
+from test_agent import TestAgent as WorkflowTestAgent, create_test_workflow
 from test_feedback import enrich_test_result, extract_test_expectations
 
 
-def error_case(name: str, username, password, message: str, *, regex: bool = False) -> TestCase:
+def error_case(name: str, username, password, message: str, *, regex: bool = False) -> GeneratedCase:
     call = f"module.register_user({username!r}, {password!r})"
     if regex:
         code = f"with self.assertRaisesRegex(ValueError, {message!r}):\n    {call}"
     else:
         code = (f"with self.assertRaises(ValueError) as caught:\n    {call}\n"
                 f"self.assertEqual(str(caught.exception), {message!r})")
-    return TestCase(name=name, code=code)
+    return GeneratedCase(name=name, code=code)
 
 
 COMPLEXITY_MESSAGE = "密码长度至少8位且包含大小写字母和数字"
 REGISTRATION_CASES = [
-    TestCase(name="test_register_success", code=(
+    GeneratedCase(name="test_register_success", code=(
         "self.assertEqual(module.register_user(' alice ', 'Secure123!'), "
         "{'username': 'alice', 'registered': True})"
     )),
@@ -90,7 +90,7 @@ def register_user(username, password):
 
 class FailureEvidenceTests(unittest.TestCase):
     def test_literal_regex_and_substring_expectations_keep_exact_text(self) -> None:
-        case = TestCase(name="test_messages", code=(
+        case = GeneratedCase(name="test_messages", code=(
             "expected = '密码不能为空。'\n"
             "self.assertEqual(str(error), expected)\n"
             "self.assertRaisesRegex(ValueError, '^密码过于简单$')\n"
@@ -110,11 +110,11 @@ class FailureEvidenceTests(unittest.TestCase):
             "first, expected = 'ab'\nself.assertEqual(str(error), expected)",
         ):
             with self.subTest(body=body):
-                self.assertEqual(extract_test_expectations(TestCase(name="test_dynamic", code=body)), [])
+                self.assertEqual(extract_test_expectations(GeneratedCase(name="test_dynamic", code=body)), [])
 
     def test_failure_context_is_attached_without_mutating_or_masking_the_result(self) -> None:
         case = REGISTRATION_CASES[5]
-        original = TestExecutionResult(status="failed", tests_run=1, failed=1, failures=[TestFailure(
+        original = ExecutionResult(status="failed", tests_run=1, failed=1, failures=[FailureDetail(
             test="test_short_weak_password (builtins.GeneratedTests.test_short_weak_password) (value='123456')",
             traceback="AssertionError: wrong message",
         )])
@@ -130,8 +130,8 @@ class FailureEvidenceTests(unittest.TestCase):
 
     def test_saved_failure_evidence_survives_when_cases_are_unavailable(self) -> None:
         case = REGISTRATION_CASES[5]
-        saved = enrich_test_result(TestExecutionResult(
-            status="failed", failures=[TestFailure(test=case.name, traceback="failed")]
+        saved = enrich_test_result(ExecutionResult(
+            status="failed", failures=[FailureDetail(test=case.name, traceback="failed")]
         ), [case])
         payload = json.loads(build_fix_input(INITIAL_CODE, None, saved, []))
         evidence = payload["failed_test_contexts"][0]
@@ -140,7 +140,7 @@ class FailureEvidenceTests(unittest.TestCase):
         self.assertIn(case.name, payload["test_result"]["test_expectations"])
 
     def test_fix_input_distinguishes_positive_and_negative_assertions(self) -> None:
-        case = TestCase(name="test_negation", code="self.assertNotIn('复杂度错误', str(error))")
+        case = GeneratedCase(name="test_negation", code="self.assertNotIn('复杂度错误', str(error))")
         payload = json.loads(build_fix_input(INITIAL_CODE, None, None, [case]))
         expectation = payload["test_contract"][0]["expectations"][0]
         self.assertEqual(expectation["assertion"], "assertNotIn")
@@ -149,8 +149,8 @@ class FailureEvidenceTests(unittest.TestCase):
 
     def test_runtime_errors_also_retain_the_original_case(self) -> None:
         case = REGISTRATION_CASES[5]
-        result = enrich_test_result(TestExecutionResult(status="failed", errors=1, error_details=[
-            TestFailure(test=case.name, traceback="NameError")
+        result = enrich_test_result(ExecutionResult(status="failed", errors=1, error_details=[
+            FailureDetail(test=case.name, traceback="NameError")
         ]), [case])
         self.assertEqual(result.error_details[0].test_code, case.code)
         self.assertEqual(result.error_details[0].expectations[0].expected, "密码过于简单")
@@ -159,10 +159,10 @@ class FailureEvidenceTests(unittest.TestCase):
 class RegistrationRepairTests(unittest.TestCase):
     def test_test_agent_preserves_expected_error_messages_from_real_failures(self) -> None:
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(
+        generator.generate.return_value = GenerationResult(
             test_cases=REGISTRATION_CASES, summary="注册行为与错误提示"
         )
-        run = create_test_workflow(TestAgent(generator)).run({"code": INITIAL_CODE})
+        run = create_test_workflow(WorkflowTestAgent(generator)).run({"code": INITIAL_CODE})
         result = run.state.get("test_result")
         self.assertEqual(result.status, "failed")
         failures = {failure.test_name: failure for failure in result.failures}
@@ -177,7 +177,7 @@ class RegistrationRepairTests(unittest.TestCase):
         reviewer = Mock()
         reviewer.review.return_value = ReviewReport(summary="本回归通过测试反馈定位业务问题", issues=[])
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(
+        generator.generate.return_value = GenerationResult(
             test_cases=REGISTRATION_CASES, summary="固定注册契约，复验不得改写"
         )
         client = Mock()
@@ -212,7 +212,7 @@ class RegistrationRepairTests(unittest.TestCase):
             fixer = OpenAICodeFixer(api_key="test-key", model="qwen-test", client=client)
         workflow = create_coding_workflow(
             CodingAgent(coding), CodeReviewAgent(reviewer),
-            test_agent=TestAgent(generator), fix_agent=FixAgent(fixer), max_fix_attempts=3,
+            test_agent=WorkflowTestAgent(generator), fix_agent=FixAgent(fixer), max_fix_attempts=3,
         )
         run = workflow.run({
             "requirements": "实现 register_user，错误提示遵循原测试，弱密码检测先于复杂度检查",
@@ -236,15 +236,15 @@ class RegistrationRepairTests(unittest.TestCase):
 
     def test_weak_passwords_beat_complexity_but_basic_input_validation_stays_first(self) -> None:
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=REGISTRATION_CASES, summary="复验")
-        run = create_test_workflow(TestAgent(generator)).run({"code": FIXED_CODE})
+        generator.generate.return_value = GenerationResult(test_cases=REGISTRATION_CASES, summary="复验")
+        run = create_test_workflow(WorkflowTestAgent(generator)).run({"code": FIXED_CODE})
         self.assertEqual(run.output.status, "passed")
         self.assertEqual(run.output.passed, len(REGISTRATION_CASES))
 
     def test_special_character_and_any_two_other_categories_are_required(self) -> None:
         valid = ("Abcdefg!", "ABCD123!", "abcde12!", "Abcd123!", "_abcde12")
         invalid = ("Abcd1234", "abcdefg!", "ABCDEFG!", "1234567!", "!@#$%^&*", "Abcd123 ", "Abc12!")
-        cases = [TestCase(
+        cases = [GeneratedCase(
             name=f"test_accept_combination_{index}",
             code=(f"self.assertEqual(module.register_user('alice', {password!r}), "
                   "{'username': 'alice', 'registered': True})"),
@@ -252,8 +252,8 @@ class RegistrationRepairTests(unittest.TestCase):
         cases += [error_case(f"test_reject_combination_{index}", "alice", password, COMPLEXITY_MESSAGE)
                   for index, password in enumerate(invalid)]
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=cases, summary="密码字符类别边界")
-        run = create_test_workflow(TestAgent(generator)).run({"code": FIXED_CODE})
+        generator.generate.return_value = GenerationResult(test_cases=cases, summary="密码字符类别边界")
+        run = create_test_workflow(WorkflowTestAgent(generator)).run({"code": FIXED_CODE})
         self.assertEqual(run.output.status, "passed")
         self.assertEqual(run.output.tests_run, len(valid) + len(invalid))
         self.assertEqual(run.output.passed, len(valid) + len(invalid))

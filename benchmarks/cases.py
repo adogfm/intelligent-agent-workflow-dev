@@ -64,4 +64,22 @@ BENCHMARK_CASES = (
         ),
         expected_rule_ids=(),
     ),
+    BenchmarkCase(
+        case_id="string_formatting_zero",
+        description="字符串百分号格式化零值不属于数值取模",
+        code='text = "value=%s" % 0\n',
+        expected_rule_ids=(),
+    ),
+    BenchmarkCase(
+        case_id="bytes_formatting_zero",
+        description="字节串百分号格式化零值不属于数值取模",
+        code='text = b"value=%d" % 0\n',
+        expected_rule_ids=(),
+    ),
+    BenchmarkCase(
+        case_id="formatting_with_nested_division",
+        description="排除格式化误报时仍检测插值中的实际零除",
+        code='text = f"value={10 / 0}: %s" % 0\n',
+        expected_rule_ids=("division-by-zero",),
+    ),
 )

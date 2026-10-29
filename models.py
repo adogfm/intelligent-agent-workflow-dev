@@ -44,6 +44,9 @@ class CodeGenerationResult(BaseModel):
             raise ValueError("生成代码不能为空")
         try:
             tree = ast.parse(code)
+            # Parsing alone accepts invalid scopes such as a top-level return.
+            # Compile without executing source or inheriting this module's flags.
+            compile(tree, "generated_code.py", "exec", dont_inherit=True)
         except (SyntaxError, ValueError) as exc:
             raise GeneratedCodeSyntaxError(code, str(exc)) from exc
         if not tree.body:

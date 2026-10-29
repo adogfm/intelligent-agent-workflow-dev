@@ -16,7 +16,7 @@ from coding_agent import CodingAgent
 from fix_agent import FixAgent
 from llm import MockReviewer
 from models import ReviewIssue, ReviewReport
-from test_agent import TestAgent
+from test_agent import TestAgent as WorkflowTestAgent
 from workflow import (
     END,
     AgentResult,
@@ -1297,7 +1297,7 @@ class CodeReviewWorkflowTests(unittest.TestCase):
     def test_code_review_agent_implements_workflow_agent_interface(self) -> None:
         self.assertTrue(all(
             issubclass(agent_type, BaseAgent)
-            for agent_type in (CodingAgent, ReviewAgent, FixAgent, TestAgent)
+            for agent_type in (CodingAgent, ReviewAgent, FixAgent, WorkflowTestAgent)
         ))
         self.assertTrue(issubclass(CodeReviewAgent, ReviewAgent))
         with self.assertRaisesRegex(TypeError, "只能接收 StateView"):

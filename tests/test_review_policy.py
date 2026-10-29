@@ -11,18 +11,18 @@ from agent import CodeReviewAgent
 from fix_agent import FixAgent
 from llm import OpenAIReviewer
 from models import (
-    ReviewContext, ReviewIssue, ReviewReport, TestCase, TestExecutionResult,
-    TestFailure, TestGenerationResult,
+    ReviewContext, ReviewIssue, ReviewReport, TestCase as GeneratedCase, TestExecutionResult as ExecutionResult,
+    TestFailure as FailureDetail, TestGenerationResult as GenerationResult,
 )
 from planner import DEFAULT_REVIEW_TASK
-from test_agent import TestAgent
+from test_agent import TestAgent as WorkflowTestAgent
 from workflow import WorkflowState, create_repair_workflow
 
 
 CODE = "def add(a, b):\n    return a + b\n"
-CASES = [TestCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
-PASSED = TestExecutionResult(status="passed", tests_run=1, passed=1)
-FAILED = TestExecutionResult(status="failed", tests_run=1, failed=1, failures=[TestFailure(
+CASES = [GeneratedCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
+PASSED = ExecutionResult(status="passed", tests_run=1, passed=1)
+FAILED = ExecutionResult(status="failed", tests_run=1, failed=1, failures=[FailureDetail(
     test="test_add", test_name="test_add", traceback="AssertionError", test_code=CASES[0].code,
 )])
 
@@ -194,12 +194,12 @@ class ScopedReviewerWorkflowTests(unittest.TestCase):
     def test_advisory_only_remote_review_does_not_keep_fix_loop_running(self) -> None:
         reviewer, _ = self.remote({"summary": "功能符合需求", "issues": [issue().model_dump()]})
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证相加")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证相加")
         runner = Mock()
         runner.run.return_value = PASSED
         fixer = Mock()
         workflow = create_repair_workflow(
-            CodeReviewAgent(reviewer), FixAgent(fixer), TestAgent(generator, runner), max_fix_attempts=3,
+            CodeReviewAgent(reviewer), FixAgent(fixer), WorkflowTestAgent(generator, runner), max_fix_attempts=3,
         )
         run = workflow.run({"code": CODE, "requirements": "实现 add，只需返回两个数的和"})
         self.assertEqual([item.step for item in run.executions], ["review", "test"])
@@ -213,11 +213,11 @@ class ScopedReviewerWorkflowTests(unittest.TestCase):
     def test_high_score_does_not_bypass_an_actual_blocking_defect(self) -> None:
         reviewer, _ = self.remote({"summary": "低严重度但明确的缺陷", "issues": [issue("code_defect", severity="low").model_dump()]})
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证相加")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证相加")
         runner = Mock()
         runner.run.return_value = PASSED
         workflow = create_repair_workflow(
-            CodeReviewAgent(reviewer), FixAgent(Mock()), TestAgent(generator, runner), max_fix_attempts=0,
+            CodeReviewAgent(reviewer), FixAgent(Mock()), WorkflowTestAgent(generator, runner), max_fix_attempts=0,
         )
         run = workflow.run({"code": CODE})
         self.assertEqual(run.state.get("report").score, 95)

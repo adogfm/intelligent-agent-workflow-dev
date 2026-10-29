@@ -42,7 +42,10 @@ def read_code_from_stdin() -> str:
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="使用 Agent 审查 Python 代码。")
+    parser = argparse.ArgumentParser(
+        description="使用 Agent 审查 Python 代码。",
+        epilog="退出码：0 表示已配置的检查通过；1 表示仍有阻断问题或执行失败；2 表示输入或配置错误。",
+    )
     parser.add_argument("path", nargs="?", help="可选的 .py 文件；省略时从终端粘贴代码")
     parser.add_argument(
         "--task",
@@ -164,10 +167,7 @@ def main() -> int:
                 print(run.state.get("test_generation_result").summary)
                 test_result = run.state.require("test_result", TestExecutionResult)
                 print(test_result.to_text())
-                if arguments.max_fix_attempts is not None:
-                    return 0 if run.state.get("repair_succeeded") else 1
-                return 0 if test_result.status == "passed" else 1
-            return 0
+            return 0 if run.report.succeeded else 1
         if arguments.fix_code:
             raise ValueError("--fix-code 需与 --requirements 一起使用。")
         if arguments.run_tests:
@@ -188,6 +188,7 @@ def main() -> int:
                 raise ValueError("--apply-fixes 只能用于传入的 .py 文件。")
             run = agent.review_and_fix(Path(arguments.path), code, task=arguments.task)
             print(run.review.report.to_text())
+            final_review = run.review.report
             print("\n=== FileEditor 结果 ===")
             if run.edit.applied:
                 print(run.edit.diff.rstrip())
@@ -199,16 +200,20 @@ def main() -> int:
                         print(f"- [{finding.severity.upper()}] {finding.problem}")
                 else:
                     print("验证通过：未发现基础问题。")
+                print("\n=== 修改后代码复审 ===")
+                final_review = agent.review(run.edit.updated_code, task=arguments.task)
+                print(final_review.to_text())
             else:
                 print("没有可安全自动应用的修改。")
             for reason in run.edit.skipped_reasons:
                 print(f"未自动修复：{reason}")
+            return 0 if not final_review.issues and not run.verification_findings else 1
         else:
             workflow = create_review_workflow(agent)
             run = workflow.run({"code": code, "task": arguments.task})
             report = run.state.require("report", ReviewReport)
             print(report.to_text())
-        return 0
+            return 0 if run.report.succeeded else 1
     except (ValueError, ConfigurationError, FileEditError) as exc:
         print(f"配置或输入错误：{exc}", file=sys.stderr)
         return 2

@@ -43,3 +43,7 @@ py-modules = [
     "test_worker",
 ]
 packages = ["benchmarks", "workflow"]
+
+[tool.pytest.ini_options]
+# Root-level test_agent.py/test_feedback.py are application modules.
+testpaths = ["tests"]

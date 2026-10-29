@@ -27,12 +27,12 @@ from models import (
     CodeGenerationResult,
     ReviewIssue,
     ReviewReport,
-    TestCase,
-    TestExecutionResult,
-    TestFailure,
-    TestGenerationResult,
+    TestCase as GeneratedCase,
+    TestExecutionResult as ExecutionResult,
+    TestFailure as FailureDetail,
+    TestGenerationResult as GenerationResult,
 )
-from test_agent import TestAgent
+from test_agent import TestAgent as WorkflowTestAgent
 from workflow import Agent, WorkflowExecutionError, WorkflowState, WorkflowStatus
 
 
@@ -40,11 +40,11 @@ BAD_CODE = "def add(a, b):\n    return a - b\n"
 GOOD_CODE = "def add(a, b):\n    return a + b\n"
 ISSUE = ReviewIssue(problem="add 使用了减法", severity="high", reason="不符合需求", suggestion="改为相加")
 REPORT = ReviewReport(summary="存在加法错误", issues=[ISSUE])
-FAILED_TEST = TestExecutionResult(
+FAILED_TEST = ExecutionResult(
     status="failed", tests_run=1, failed=1,
-    failures=[TestFailure(test="test_add", traceback="AssertionError: -1 != 5")],
+    failures=[FailureDetail(test="test_add", traceback="AssertionError: -1 != 5")],
 )
-CASES = [TestCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
+CASES = [GeneratedCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
 
 
 class FixAgentTests(unittest.TestCase):
@@ -89,7 +89,7 @@ class FixAgentTests(unittest.TestCase):
 
     def test_timeout_is_actionable_test_feedback(self) -> None:
         run = create_fix_workflow(self.agent).run({
-            "code": BAD_CODE, "test_result": TestExecutionResult(status="timeout", message="超时"),
+            "code": BAD_CODE, "test_result": ExecutionResult(status="timeout", message="超时"),
         })
         self.assertTrue(run.output.changed)
         self.assertEqual(self.fixer.fix.call_args.kwargs["test_result"].status, "timeout")
@@ -97,7 +97,7 @@ class FixAgentTests(unittest.TestCase):
     def test_no_issues_or_failures_skips_provider(self) -> None:
         report = ReviewReport(summary="没有问题", issues=[])
         state = WorkflowState({"code": GOOD_CODE, "report": report,
-                               "test_result": TestExecutionResult(status="passed", tests_run=1, passed=1)})
+                               "test_result": ExecutionResult(status="passed", tests_run=1, passed=1)})
         run = create_fix_workflow(self.agent).run(state)
         self.assertTrue(run.output.skipped)
         self.assertFalse(run.output.changed)
@@ -154,7 +154,7 @@ class FixWorkflowTests(unittest.TestCase):
             REPORT if code == BAD_CODE else ReviewReport(summary="没有审查问题", issues=[])
         )
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证加法")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证加法")
         fixer = Mock()
         fixer.fix.return_value = CodeGenerationResult(code=fixed_code, summary="修复加法")
         return coding, reviewer, generator, fixer
@@ -163,7 +163,7 @@ class FixWorkflowTests(unittest.TestCase):
         coding, reviewer, generator, fixer = self.make_agents()
         workflow = create_coding_workflow(
             CodingAgent(coding), CodeReviewAgent(reviewer),
-            test_agent=TestAgent(generator), fix_agent=FixAgent(fixer),
+            test_agent=WorkflowTestAgent(generator), fix_agent=FixAgent(fixer),
         )
         run = workflow.run({"requirements": "实现相加"})
         state = run.state
@@ -185,7 +185,7 @@ class FixWorkflowTests(unittest.TestCase):
     def test_test_only_workflow_and_unresolved_failures_do_not_loop(self) -> None:
         coding, _, generator, fixer = self.make_agents("def add(a, b):\n    return a + b + 1\n")
         run = create_coding_workflow(
-            CodingAgent(coding), test_agent=TestAgent(generator), fix_agent=FixAgent(fixer)
+            CodingAgent(coding), test_agent=WorkflowTestAgent(generator), fix_agent=FixAgent(fixer)
         ).run({"requirements": "实现相加"})
         self.assertEqual([item.step for item in run.executions], ["coding", "test", "fix", "verify_test"])
         self.assertEqual(run.state.get("test_result").status, "failed")
@@ -279,7 +279,7 @@ class CodeFixerTests(unittest.TestCase):
 
 
 class FixCliTests(unittest.TestCase):
-    def test_cli_fix_flag_reports_state_changes(self) -> None:
+    def test_cli_fix_flag_reports_state_changes_and_remaining_blocker(self) -> None:
         fixer = Mock()
         fixer.fix.return_value = CodeGenerationResult(code=GOOD_CODE, summary="修复加法")
         output = io.StringIO()
@@ -288,10 +288,11 @@ class FixCliTests(unittest.TestCase):
                 patch("main.create_reviewer", return_value=MockReviewer()), \
                 patch("main.create_test_generator", return_value=MockTestGenerator()), \
                 patch("main.create_code_fixer", return_value=fixer), redirect_stdout(output):
-            self.assertEqual(main(), 0)
+            self.assertEqual(main(), 1)
         self.assertIn("Fix Agent 修复结果", output.getvalue())
         self.assertIn("修复后的代码", output.getvalue())
         self.assertIn(GOOD_CODE, output.getvalue())
+        self.assertIn("示例问题", output.getvalue())
 
     def test_cli_fix_flag_requires_generation_input(self) -> None:
         with patch("sys.argv", ["main.py", "--fix-code"]), \

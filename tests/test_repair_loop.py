@@ -13,10 +13,10 @@ from fix_agent import FixAgent
 from llm import LLMFixError
 from main import main
 from models import (
-    CodeGenerationResult, ReviewIssue, ReviewReport, TestCase,
-    TestExecutionResult, TestFailure, TestGenerationResult,
+    CodeGenerationResult, ReviewIssue, ReviewReport, TestCase as GeneratedCase,
+    TestExecutionResult as ExecutionResult, TestFailure as FailureDetail, TestGenerationResult as GenerationResult,
 )
-from test_agent import TestAgent
+from test_agent import TestAgent as WorkflowTestAgent
 from workflow import (
     END,
     RepairDecision,
@@ -32,7 +32,7 @@ from workflow import (
 BAD = "def add(a, b):\n    return a - b\n"
 INTERMEDIATE = "def add(a, b):\n    return a + b + 1\n"
 GOOD = "def add(a, b):\n    return a + b\n"
-CASES = [TestCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
+CASES = [GeneratedCase(name="test_add", code="self.assertEqual(module.add(2, 3), 5)")]
 
 
 def review_report(code: str) -> ReviewReport:
@@ -41,11 +41,11 @@ def review_report(code: str) -> ReviewReport:
     )])
 
 
-def make_test_result(code: str) -> TestExecutionResult:
-    return TestExecutionResult(
+def make_test_result(code: str) -> ExecutionResult:
+    return ExecutionResult(
         status="passed" if code == GOOD else "failed", tests_run=1,
         passed=int(code == GOOD), failed=int(code != GOOD), stdout=code,
-        failures=[] if code == GOOD else [TestFailure(test="test_add", traceback="AssertionError")],
+        failures=[] if code == GOOD else [FailureDetail(test="test_add", traceback="AssertionError")],
     )
 
 
@@ -56,14 +56,14 @@ class RepairLoopTests(unittest.TestCase):
         self.fixer = Mock()
         self.fixer.fix.return_value = CodeGenerationResult(code=GOOD, summary="修复加法")
         self.generator = Mock()
-        self.generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="测试相加")
+        self.generator.generate.return_value = GenerationResult(test_cases=CASES, summary="测试相加")
         self.runner = Mock()
         self.runner.run.side_effect = lambda code, cases: make_test_result(code)
 
     def engine(self, limit: int = 3, *, real_runner: bool = False):
         return create_repair_workflow(
             CodeReviewAgent(self.reviewer), FixAgent(self.fixer),
-            TestAgent(self.generator, None if real_runner else self.runner), max_fix_attempts=limit,
+            WorkflowTestAgent(self.generator, None if real_runner else self.runner), max_fix_attempts=limit,
         )
 
     def test_multiple_repairs_converge_and_record_each_round(self) -> None:
@@ -149,7 +149,7 @@ class RepairLoopTests(unittest.TestCase):
         coding.generate.return_value = CodeGenerationResult(code=BAD, summary="初始代码")
         workflow = create_coding_workflow(
             CodingAgent(coding), CodeReviewAgent(self.reviewer),
-            test_agent=TestAgent(self.generator), fix_agent=FixAgent(self.fixer), max_fix_attempts=3,
+            test_agent=WorkflowTestAgent(self.generator), fix_agent=FixAgent(self.fixer), max_fix_attempts=3,
         )
         run = workflow.run({"requirements": "实现相加"})
         self.assertEqual(run.executions[0].step, "coding")
@@ -213,7 +213,7 @@ class RepairLoopTests(unittest.TestCase):
         self.assertEqual(self.runner.run.call_count, 1)
 
     def test_passing_tests_do_not_hide_remaining_review_issues(self) -> None:
-        self.runner.run.side_effect = lambda code, cases: TestExecutionResult(status="passed", tests_run=1, passed=1)
+        self.runner.run.side_effect = lambda code, cases: ExecutionResult(status="passed", tests_run=1, passed=1)
         self.fixer.fix.return_value = CodeGenerationResult(code=INTERMEDIATE, summary="仍有问题")
         run = self.engine(1).run({"code": BAD})
         self.assertEqual(run.state.get("test_result").status, "passed")
@@ -343,11 +343,11 @@ class RepairCliTests(unittest.TestCase):
         reviewer = Mock()
         reviewer.review.side_effect = lambda code, findings, **kwargs: review_report(code)
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证加法")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证加法")
         fixer = Mock()
         fixer.fix.return_value = CodeGenerationResult(code=INTERMEDIATE, summary="仍不正确")
         runner = Mock()
-        runner.run.return_value = TestExecutionResult(status="passed", tests_run=1, passed=1)
+        runner.run.return_value = ExecutionResult(status="passed", tests_run=1, passed=1)
         output = io.StringIO()
         with patch("sys.argv", ["main.py", "--requirements", "实现相加", "--fix-code", "--run-tests",
                                 "--max-fix-attempts", "1"]), \
@@ -367,7 +367,7 @@ class RepairCliTests(unittest.TestCase):
         reviewer = Mock()
         reviewer.review.return_value = ReviewReport(summary="没有问题", issues=[])
         generator = Mock()
-        generator.generate.return_value = TestGenerationResult(test_cases=CASES, summary="验证加法")
+        generator.generate.return_value = GenerationResult(test_cases=CASES, summary="验证加法")
         runner = Mock()
         runner.run.return_value = make_test_result(GOOD)
         with patch("sys.argv", ["main.py", "--requirements", "实现相加", "--fix-code", "--run-tests",

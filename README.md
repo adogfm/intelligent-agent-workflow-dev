@@ -1,6 +1,10 @@
-# Intelligent Agent Workflow
+# Intelligent Agent Workflow（开发版）
 
 一个基于多 Agent 协作的代码审查工作流系统，实现代码生成、代码审查、自动化测试和迭代修复的完整流程。
+
+**当前仓库是开发版 `intelligent-agent-workflow-dev`。** 开发仓库地址：[adogfm/intelligent-agent-workflow-dev](https://github.com/adogfm/intelligent-agent-workflow-dev)。本页的克隆、安装和运行命令均针对开发版。
+
+原项目作为[稳定版仓库](https://github.com/adogfm/intelligent-agent-workflow)保留，开发与修复在当前开发仓库进行。
 
 ## 一、项目简介
 
@@ -46,7 +50,7 @@ flowchart TD
 ## 四、项目结构
 
 ```text
-intelligent-agent-workflow/
+intelligent-agent-workflow-dev/
 ├── workflow/          # 工作流编排与流程控制
 ├── tests/             # 自动化测试
 ├── demo.py            # 完整工作流演示
@@ -68,33 +72,47 @@ intelligent-agent-workflow/
 
 ## 六、安装与运行
 
-### 1. 克隆仓库
+### 1. 克隆开发仓库
 
-```bash
-git clone https://github.com/adogfm/intelligent-agent-workflow.git
-cd intelligent-agent-workflow
+```powershell
+git clone https://github.com/adogfm/intelligent-agent-workflow-dev.git
+cd intelligent-agent-workflow-dev
 ```
+
+在已有目录中继续开发时，可核对仓库来源：
+
+```powershell
+git remote get-url origin
+```
+
+结果应为 `https://github.com/adogfm/intelligent-agent-workflow-dev.git`（已有配置也可能省略末尾 `.git`），目录名应为 `intelligent-agent-workflow-dev`。
 
 ### 2. 安装依赖
 
-建议先创建并激活 Python 虚拟环境。运行源码和离线 Demo 只需运行依赖：
+在开发版目录中建立独立 `.venv`。稳定版和开发版分别使用各自的虚拟环境，避免同名包的 editable 安装相互覆盖。
 
-```bash
-python -m pip install -r requirements.txt
+Windows PowerShell 下，在开发版根目录创建独立环境并安装项目与测试依赖：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pip check
 ```
 
-如需运行 pytest、开发项目或使用安装后的命令行入口，安装项目及测试依赖：
+以下 Windows 命令显式使用开发版 `.venv`，无需激活环境。命令行入口也使用 `.\.venv\Scripts\code-review-agent.exe` 等完整路径。Linux/macOS 对应的 Python 路径为 `./.venv/bin/python`。
 
-```bash
-python -m pip install -e ".[test]"
+仅运行源码和离线 Demo 时，也可在该虚拟环境中只安装运行依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 `test` 依赖组包含 `pytest>=9.1.1,<10.0.0`，并同时安装项目运行依赖。默认 Demo 使用确定性离线供应商，无需 API Key；真实模型接口通过 `.env.example` 中的配置启用，本次验证未调用真实模型。
 
 ### 3. 运行工作流演示
 
-```bash
-python demo.py
+```powershell
+.\.venv\Scripts\python.exe demo.py
 ```
 
 程序将展示 Agent 执行过程、条件分支选择、自动修复循环、执行日志以及最终工作流报告。
@@ -103,17 +121,29 @@ python demo.py
 
 安装 `.[test]` 后运行 pytest：
 
-```bash
-python -m pytest -v
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v
 ```
 
 也可只使用运行依赖，通过 Python 标准库运行相同测试方法：
 
-```bash
-python -m unittest discover -s tests -v
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 pytest 会额外单独统计 `unittest.subTest` 子测试；unittest 的测试方法总数不含这些子测试的单独计数。
+
+pytest 默认只在 `tests/` 中发现测试；根目录的 `test_agent.py`、`test_feedback.py` 和 `test_worker.py` 是业务模块。测试中导入的非测试 `Test*` 类型使用别名，避免被当作测试类收集。CI 将收集警告视为错误，可在本地执行相同检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest --collect-only -q -W error::pytest.PytestCollectionWarning
+```
+
+### 5. CLI 退出码
+
+`code-review-agent` / `main.py` 返回 0 表示当前代码已通过配置的检查；审查存在阻断问题、启用的测试未通过或执行失败时返回 1；输入或配置错误返回 2。`recommendations` 中的可选建议不阻断成功。未启用的测试不会自动执行。
+
+`--apply-fixes` 实际修改文件后，会再次执行代码审查，并结合修改后 CodeChecker 结果决定退出码。普通 MockReviewer 固定返回一个示例阻断问题，因此 Mock CLI 即使导入测试通过也返回 1；完整离线成功示例可运行 `demo.py`。
 
 ## 七、演示结果
 
@@ -141,12 +171,14 @@ def add(a, b):
 - 704 个子测试通过。
 - 存在 39 条 Pytest 警告，主要涉及测试类的自动收集提示。
 
+2026-10-29 开发版复验：261 项测试、847 个子测试通过，原有 39 条收集警告已清零，测试 ID 与处理前完全一致。处理方式与证据见 [F06 修复报告](reports/2026-10-29/F06修复报告.md)。
+
 其他 Demo 入口：
 
-```bash
-python demo.py --max-fix-attempts 0
-python demo.py --max-fix-attempts 1
-python demo.py --json
+```powershell
+.\.venv\Scripts\python.exe demo.py --max-fix-attempts 0
+.\.venv\Scripts\python.exe demo.py --max-fix-attempts 1
+.\.venv\Scripts\python.exe demo.py --json
 ```
 
 | 模式 | 业务结果 | 退出码 | 阶段 / 修复轮数 / 日志数 |
@@ -162,8 +194,8 @@ python demo.py --json
 
 - TestRunner 的超时控制与报告输出截断是不同机制。`max_output_bytes` 默认对 stdout、stderr 各读取前 64 KiB，再附加截断提示；运行时日志文件大小没有该上限，子进程也不是操作系统安全沙箱。
 - WorkflowReport 顶层采用冻结 dataclass，内容复制后与原状态隔离；嵌套模型和容器仍可能可变，不保证深度不可变。
-- 通用 Workflow 的 `succeeded` 只反映已配置检查与待复验要求，不表示未配置的检查也已执行。`main.py` 的非循环入口退出码也不等同于业务验收结果，详见 Design.md。
-- 当前 AST 检查、代码生成校验和特定密码修复提示词仍有已知限制，详见 Design.md 第 7、14 节。
+- 通用 Workflow 的 `succeeded` 与 CLI 的成功退出码只反映已配置检查与待复验要求，不表示未配置的检查也已执行，详见 Design.md。
+- 初始生成和 CodeChecker 会解析并编译代码，拦截作用域等语法错误，校验过程不执行代码。可确定的文本 `%` 格式化已排除除零误报；AST 规则覆盖范围、动态类型推断和特定密码修复提示词仍有已知限制，详见 Design.md 第 7、14 节。
 
 ## 八、设计文档
 
