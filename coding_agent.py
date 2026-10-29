@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pydantic import ValidationError
 
 from agent import ReviewAgent
@@ -15,11 +17,19 @@ class CodingAgent(BaseAgent):
 
     name = "coding"
 
-    def __init__(self, generator: CodeGenerator) -> None:
+    def __init__(self, generator: CodeGenerator, *, max_syntax_retries: int = 3) -> None:
+        if isinstance(max_syntax_retries, bool) or not isinstance(max_syntax_retries, int) or max_syntax_retries < 0:
+            raise ValueError("max_syntax_retries 必须是非负整数。")
         self._generator = generator
+        self._max_syntax_retries = max_syntax_retries
 
     def generate(self, requirements: str, *, context: str = "") -> CodeGenerationResult:
-        """Generate a validated artifact, also usable outside a workflow."""
+        """Generate a validated artifact with bounded syntax-only retries.
+
+        ``max_syntax_retries=0`` disables retries. Each retry retains the
+        original requirement/context and adds only the latest invalid source
+        and compiler diagnostic. No source is executed or published here.
+        """
 
         if not isinstance(requirements, str):
             raise TypeError("用户需求必须是 str。")
@@ -28,8 +38,26 @@ class CodingAgent(BaseAgent):
         if not isinstance(context, str):
             raise TypeError("生成上下文必须是 str。")
 
+        retry_context = context
+        for retry in range(self._max_syntax_retries + 1):
+            try:
+                return self._generate_once(requirements.strip(), context=retry_context)
+            except LLMCodeSyntaxError as exc:
+                if retry == self._max_syntax_retries:
+                    raise LLMCodeSyntaxError(
+                        f"生成代码在 {retry + 1} 次生成调用后仍未通过 Python 语法检查"
+                        f"（最多 {self._max_syntax_retries} 次重试）：{exc.reason}",
+                        generated_code=exc.generated_code, reason=exc.reason,
+                    ) from exc
+                retry_context = context + "\n\n以下为上一次生成的语法失败诊断数据，请修正语法并重新返回完整代码：\n" + json.dumps({
+                    "syntax_retry": retry + 1, "syntax_error": exc.reason,
+                    "invalid_generated_code": exc.generated_code,
+                }, ensure_ascii=False)
+        raise AssertionError("语法重试循环未返回结果")
+
+    def _generate_once(self, requirements: str, *, context: str) -> CodeGenerationResult:
         try:
-            result = self._generator.generate(requirements.strip(), context=context)
+            result = self._generator.generate(requirements, context=context)
             if not isinstance(result, CodeGenerationResult):
                 raise LLMGenerationError("CodeGenerator 必须返回 CodeGenerationResult。")
             # Revalidate injected providers as well as real LLM responses before commit.

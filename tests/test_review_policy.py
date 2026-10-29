@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from agent import CodeReviewAgent
 from fix_agent import FixAgent
-from llm import OpenAIReviewer
+from llm import OpenAICodeFixer, OpenAIReviewer
 from models import (
     ReviewContext, ReviewIssue, ReviewReport, TestCase as GeneratedCase, TestExecutionResult as ExecutionResult,
     TestFailure as FailureDetail, TestGenerationResult as GenerationResult,
@@ -223,6 +223,104 @@ class ScopedReviewerWorkflowTests(unittest.TestCase):
         self.assertEqual(run.state.get("report").score, 95)
         self.assertFalse(run.state.get("repair_succeeded"))
         self.assertEqual(run.state.get("repair_stop_reason"), "max_fix_attempts")
+
+
+class ErrorMessagePolicyTests(unittest.TestCase):
+    """Capture real request construction with injected offline SDK clients."""
+
+    def capture_requests(self, requirements, case, result=None):
+        code = "def register_user(password):\n    if not password:\n        raise ValueError('新提示！')\n"
+        review_client, fix_client = Mock(), Mock()
+        # Transport fixtures only; generated code is not evaluated as model behavior.
+        for client, payload in (
+            (review_client, {"summary": "离线请求捕获", "issues": []}),
+            (fix_client, {"code": code, "summary": "离线请求捕获"}),
+        ):
+            client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(
+                finish_reason="stop", message=SimpleNamespace(refusal=None, content=json.dumps(payload)),
+            )])
+        context = "按本次需求处理错误文案，不扩展注册功能。"
+        options = {"api_key": "offline-test-key", "base_url": "https://example.invalid/v1", "model": "offline-policy"}
+        with patch("llm.load_dotenv"), patch("llm.OpenAI", side_effect=AssertionError("Real SDK client forbidden")):
+            reviewer = OpenAIReviewer(client=review_client, **options)
+            fixer = OpenAICodeFixer(client=fix_client, **options)
+            report = CodeReviewAgent(reviewer).review_detailed(code, review_context=ReviewContext(
+                requirements=requirements, context=context, test_cases=[case], test_result=result,
+            )).report
+            fixer.fix(code, report=report, test_result=result, test_cases=[case],
+                      requirements=requirements, context=context)
+        review_client.chat.completions.create.assert_called_once()
+        fix_client.chat.completions.create.assert_called_once()
+        review_messages = review_client.chat.completions.create.call_args.kwargs["messages"]
+        fix_messages = fix_client.chat.completions.create.call_args.kwargs["messages"]
+        review_payload = json.loads(review_messages[1]["content"].split(
+            "<workflow_context>\n", 1,
+        )[1].split("\n</workflow_context>", 1)[0])
+        fix_payload = json.loads(fix_messages[1]["content"])
+        for payload in (review_payload, fix_payload):
+            self.assertEqual(payload["requirements"], requirements)
+            self.assertEqual(payload["context"], context)
+            self.assertEqual(payload["test_cases"], [case.model_dump()])
+        return (review_messages[0]["content"], fix_messages[0]["content"]), review_payload, fix_payload, report
+
+    def test_review_and_fix_share_requirement_scoped_message_rules(self):
+        for requirements in (
+            "将 register_user 的空密码错误提示由旧提示改为新提示！。",
+            "修复 register_user，保留原有错误提示的中英文、大小写和标点。",
+            "修复 register_user 的输入校验，保持其他行为不变。",
+        ):
+            with self.subTest(requirements=requirements):
+                case = GeneratedCase(name="test_message", code=(
+                    "with self.assertRaisesRegex(ValueError, '^新提示！$'):\n"
+                    "    module.register_user('')"
+                ))
+                systems, _, _, _ = self.capture_requests(requirements, case)
+                for system in systems:
+                    self.assertIn("用户需求或与需求一致的原测试指定错误提示时，必须保持中英文、大小写和标点一致", system)
+                    self.assertIn("用户明确要求修改提示时遵循新要求", system)
+                    self.assertIn("不为匹配当前实现改写测试", system)
+                    self.assertNotIn("不修改原测试或原错误提示", system)
+
+    def test_exact_and_regex_message_contracts_reach_both_stages_unchanged(self):
+        cases = (
+            (GeneratedCase(name="test_exact_message", code=(
+                "with self.assertRaises(ValueError) as caught:\n"
+                "    module.register_user('')\n"
+                "self.assertEqual(str(caught.exception), 'Password required.')"
+            )), "exact", "Password required."),
+            (GeneratedCase(name="test_regex_message", code=(
+                "with self.assertRaisesRegex(ValueError, '^口令不能为空！$'):\n"
+                "    module.register_user('')"
+            )), "regex", "^口令不能为空！$"),
+        )
+        for case, kind, expected in cases:
+            with self.subTest(kind=kind):
+                _, review_payload, fix_payload, _ = self.capture_requests("保留原测试指定的错误提示。", case)
+                self.assertEqual(review_payload["test_cases"][0]["code"], case.code)
+                contract = fix_payload["test_contract"][0]
+                self.assertEqual(contract["code"], case.code)
+                self.assertEqual((contract["expectations"][0]["kind"], contract["expectations"][0]["expected"]),
+                                 (kind, expected))
+
+    def test_conflicting_old_contract_keeps_disclosure_rule_and_real_failure(self):
+        requirements = "将 register_user 的空密码错误提示由旧提示改为新提示！。"
+        case = GeneratedCase(name="test_old_message", code=(
+            "with self.assertRaisesRegex(ValueError, '^旧提示$'):\n"
+            "    module.register_user('')"
+        ))
+        result = ExecutionResult(status="failed", tests_run=1, failed=1, failures=[FailureDetail(
+            test=case.name, test_name=case.name, traceback="AssertionError: old message differs",
+        )])
+        systems, review_payload, fix_payload, report = self.capture_requests(requirements, case, result)
+        for system in systems:
+            self.assertIn("若与明确用户需求冲突，以用户需求为准", system)
+            self.assertIn("在 summary 中说明冲突，不改写测试或宣称冲突已解决", system)
+        self.assertEqual(review_payload["test_result"]["status"], "failed")
+        self.assertEqual(fix_payload["test_result"]["status"], "failed")
+        self.assertEqual(fix_payload["failed_test_contexts"][0]["test_code"], case.code)
+        self.assertEqual(fix_payload["test_contract"][0]["expectations"][0]["expected"], "^旧提示$")
+        self.assertEqual(report.test_status, "failed")
+        self.assertTrue(any(issue.category == "test_failure" for issue in report.issues))
 
 
 if __name__ == "__main__":

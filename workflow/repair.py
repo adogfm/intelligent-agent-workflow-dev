@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, replace
 import time
 from typing import Any, Literal, Mapping
@@ -17,7 +16,7 @@ from workflow.engine import (
     WorkflowRun,
     WorkflowStep,
 )
-from workflow.state import StateView, WorkflowState, WorkflowStatus
+from workflow.state import StateView, WorkflowState, WorkflowStatus, _copy_state_data
 
 
 @dataclass(frozen=True)
@@ -164,9 +163,10 @@ class _RepairStage(BaseAgent):
             raise TypeError(f"Agent {self.name!r} 必须返回 AgentResult")
         updates = dict(result.updates)
         values = {**state.to_dict(), **updates}
+        # Repair history must support the same isolated value types as state.
         execution = RepairStepExecution(
             self._stage, self.name, state.version + 1,
-            time.monotonic() - started, deepcopy(result.output),
+            time.monotonic() - started, _copy_state_data(result.output),
         )
         active = state.get("active_repair_round")
         history = state["repair_history"]
@@ -178,9 +178,9 @@ class _RepairStage(BaseAgent):
             changed = state["code"] != values["code"]
             active = RepairRound(
                 attempt, state["code"], values["code"],
-                deepcopy(state.get("report")), deepcopy(values.get("report")),
-                deepcopy(state.get("test_result")), deepcopy(values.get("test_result")),
-                deepcopy(result.output), executions, "running" if changed else "unchanged",
+                _copy_state_data(state.get("report")), _copy_state_data(values.get("report")),
+                _copy_state_data(state.get("test_result")), _copy_state_data(values.get("test_result")),
+                _copy_state_data(result.output), executions, "running" if changed else "unchanged",
             )
             updates.update({"fix_attempts": attempt, "fix_changed": changed})
             if not changed:
@@ -196,7 +196,7 @@ class _RepairStage(BaseAgent):
             updates["_repair_tested"] = True
             if active is not None:
                 updates["active_repair_round"] = replace(
-                    active, test_result_after=deepcopy(values["test_result"]),
+                    active, test_result_after=_copy_state_data(values["test_result"]),
                     executions=(*active.executions, execution),
                 )
             elif _resolved(values):
@@ -209,7 +209,7 @@ class _RepairStage(BaseAgent):
             updates["_repair_last_review"] = execution
             if active is not None:
                 closed = replace(
-                    active, report_after=deepcopy(values["report"]),
+                    active, report_after=_copy_state_data(values["report"]),
                     status="resolved" if _resolved(values) else "unresolved",
                     executions=(*active.executions, execution),
                 )
@@ -280,8 +280,8 @@ class RepairWorkflowEngine(WorkflowEngine):
             previous_review = state.get("_repair_last_review")
             active = RepairRound(
                 attempts, state.get("code"), state.get("code"),
-                deepcopy(state.get("report")), deepcopy(state.get("report")),
-                deepcopy(state.get("test_result")), deepcopy(state.get("test_result")),
+                _copy_state_data(state.get("report")), _copy_state_data(state.get("report")),
+                _copy_state_data(state.get("test_result")), _copy_state_data(state.get("test_result")),
                 None, (previous_review,) if previous_review is not None else (), "running",
             )
         if active is not None:

@@ -172,6 +172,10 @@ class RegistrationRepairTests(unittest.TestCase):
         self.assertIn("密码必须包含大小写字母和数字", failures["test_short_weak_password"].traceback)
 
     def test_workflow_repairs_messages_then_order_and_retests_until_all_pass(self) -> None:
+        requirements = (
+            "实现 register_user，最小长度8，必须包含非字母数字且非空白的特殊字符，"
+            "并在大写、小写、数字中至少满足两类；错误提示遵循原测试，弱密码检测先于复杂度检查"
+        )
         coding = Mock()
         coding.generate.return_value = CodeGenerationResult(code=INITIAL_CODE, summary="注册回归输入")
         reviewer = Mock()
@@ -186,8 +190,9 @@ class RegistrationRepairTests(unittest.TestCase):
         def respond(**request):
             payload = json.loads(request["messages"][1]["content"])
             requests.append(payload)
-            self.assertIn("先检测弱密码", request["messages"][0]["content"])
-            self.assertIn("不能先返回复杂度错误", request["messages"][0]["content"])
+            self.assertEqual(payload["requirements"], requirements)
+            self.assertNotIn("先检测弱密码", request["messages"][0]["content"])
+            self.assertNotIn("register_user", request["messages"][0]["content"])
             self.assertEqual(payload["test_cases"], [case.model_dump() for case in REGISTRATION_CASES])
             self.assertEqual(payload["test_result"]["status"], "failed")
             failures = {item["test_name"]: item for item in payload["failed_test_contexts"]}
@@ -214,9 +219,7 @@ class RegistrationRepairTests(unittest.TestCase):
             CodingAgent(coding), CodeReviewAgent(reviewer),
             test_agent=WorkflowTestAgent(generator), fix_agent=FixAgent(fixer), max_fix_attempts=3,
         )
-        run = workflow.run({
-            "requirements": "实现 register_user，错误提示遵循原测试，弱密码检测先于复杂度检查",
-        })
+        run = workflow.run({"requirements": requirements})
         state = run.state
         self.assertEqual(state.get("repair_stop_reason"), "resolved")
         self.assertTrue(state.get("repair_succeeded"))
